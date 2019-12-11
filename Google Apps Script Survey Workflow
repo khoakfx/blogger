@@ -1,0 +1,108 @@
+// doPost needs the spreadsheet ID, it has no concept of "active spreadsheet".
+var _spreadsheetId = '1KrkGl5UMr5qEa3NTxIPD_ZeKYsUxvjxvgoOLtCK05tE';
+
+// Add custom menu with option to send survey
+function onOpen() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var entries = [{
+    name : "Send Survey",
+    functionName : "sendSurvey"
+  }];
+  sheet.addMenu("Custom Menu", entries);
+};
+
+/**
+ * Build & Send Survey, an HTML form in email.
+ */
+function sendSurvey() {
+  var recipient = Browser.inputBox("Send Survey", "Enter Recipient Email", Browser.Buttons.OK_CANCEL);
+  if (recipient === 'cancel') return;
+  
+  var subject = 'Commuting Survey';
+  
+  // Get the URL of the published Web App, to include in email for POST of response
+  var scriptUrl = ScriptApp.getService().getUrl();
+  if (!scriptUrl) throw new Error( 'You must Deploy as Web App first.' ); 
+  
+  // Build email body
+  var template = HtmlService.createTemplateFromFile('emailTemplate');
+  template.scriptUrl = scriptUrl;
+  template.serialNumber = getGUID();  // Generate serial number for this response
+  var html = template.evaluate().getContent();
+
+  // During debugging, send emails to self. Remove this line for real operation.
+  recipient = Session.getActiveUser().getEmail();  
+  
+  var plainText = 'Please complete this survey online at: ' + scriptUrl;
+  html += '<p>Alternatively, you may <A href="' + scriptUrl + '"> complete this survey online.</A>';
+  
+  // Send email form
+  GmailApp.sendEmail(recipient, subject, plainText, {htmlBody:html} );
+  
+  Browser.msgBox("Survey Sent");
+}
+
+/**
+ * GET handler to provide alternate online form.
+ */
+function doGet() {
+  // Build survey body
+  var template = HtmlService.createTemplateFromFile('emailTemplate');
+  template.scriptUrl = ScriptApp.getService().getUrl();
+  template.serialNumber = getGUID();  // Generate serial number for this response
+  var app = template.evaluate();
+  return app;
+}
+
+/**
+ * POST handler for responses; 
+ */
+function doPost(e) {
+  Logger.log(e);
+  var ss = SpreadsheetApp.openById(_spreadsheetId);
+  var sheet = ss.getSheets()[0];  // Assume first sheet collects responses
+
+  // Build a row of data with timestamp + posted response
+  var row = [
+    new Date(),                     // Timestamp
+    e.parameters.serial[0],         // Serial Number
+    e.parameters.commute[0],        // Commuter? Yes / No
+    e.parameters.vehicle.join(',')  // Vehicle
+  ];
+  
+  // Make sure we are the only people adding rows to the spreadsheet
+  var lock = LockService.getPublicLock();
+  // Wait for up to 30 seconds for other processes to finish.
+  var locked = lock.tryLock(30000);
+  
+  if (locked) {
+    // Save response to spreadsheet
+    var rowNum = sheet.getLastRow()+1;
+    sheet.getRange(rowNum, 1, 1, row.length).setValues([row]);
+
+    // Release the lock so that other processes can continue.
+    lock.releaseLock();
+    var result = "Response Recorded: \n  "+row.join('\n  ');
+  }
+  else {
+    // Failed to get lock
+    result = "System busy, please try again.";
+  }
+
+  // Report result of POST, in plain text
+  return ContentService.createTextOutput(result)
+                       .setMimeType(ContentService.MimeType.TEXT);
+}
+
+
+/**
+ * Returns an rfc4122 version 4 compliant GUID / UUID string
+ * Thanks to broofa!
+ * http://stackoverflow.com/a/2117523/1677912
+ */
+function getGUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random()*16|0, v = c == 'x' ? r : (r&0x3|0x8);
+    return v.toString(16);
+  });
+}
